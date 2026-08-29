@@ -40,9 +40,19 @@ void input_handler(int device_fd) {
                         << reader.get_key_state(value) << " from: "
                         << reader.get_device_name(device_fd) << std::endl;
                 std::cout << "Buffer: " << conv.get_buffer_dump() << std::endl;
+                std::cout << "Layout: " << (conv.getCurrentLayout()==Layout::EN?"EN":conv.getCurrentLayout()==Layout::RU?"RU":"UNKNOWN") << std::endl;
             }
 
             Action action_needed = conv.process();
+
+            // check auto-correct if no manual conversion triggered
+            if (action_needed == None && conv.isAutoEnabled()) {
+                Action autoAction = conv.checkAutoTrigger(code, value);
+                if (autoAction != None) {
+                    action_needed = autoAction;
+                    if (debug_mode) std::cout << "Auto-correct triggered for last word!" << std::endl;
+                }
+            }
 
             if (action_needed != None) {
                 if (debug_mode) std::cout << "Convert pattern detected, processing..." << std::endl;
@@ -54,8 +64,10 @@ void input_handler(int device_fd) {
                                 << reader.get_key_state(ev.value) << std::endl;
                     }
                 }
+                conv.toggleLayout();
                 reader.flush();
                 if (debug_mode) std::cout << "Buffer: " << conv.get_buffer_dump() << std::endl;
+                if (debug_mode) std::cout << "Layout switched to: " << (conv.getCurrentLayout()==Layout::EN?"EN":"RU") << std::endl;
             }
         }
     }
@@ -214,6 +226,40 @@ bool run() {
                     if (debug_mode) std::cout << "Ignoring invalid UID: " << uid << std::endl;
                 }
             }
+        }
+
+        // auto-correct options (Punto Switcher like)
+        bool auto_correct = false;
+        conf.get_bool("Easy Switcher", "auto-correct", auto_correct, false);
+        int auto_min_len = 3;
+        conf.get_int("Easy Switcher", "auto-min-length", auto_min_len, 3);
+        std::string dict_ru, dict_en;
+        conf.get_string("Easy Switcher", "auto-dict-ru", dict_ru, "");
+        conf.get_string("Easy Switcher", "auto-dict-en", dict_en, "");
+        std::string init_layout_str;
+        conf.get_string("Easy Switcher", "initial-layout", init_layout_str, "en");
+        if (auto_min_len < 1) auto_min_len = 1;
+        if (auto_min_len > 10) auto_min_len = 10;
+        conv.setAutoEnabled(auto_correct);
+        conv.setAutoMinLength(auto_min_len);
+        conv.loadDictionaries(dict_ru, dict_en);
+        // set initial layout - try to auto-detect first, fallback to config
+        Layout detected = conv.querySystemLayout();
+        if (detected != Layout::UNKNOWN) {
+            conv.setCurrentLayout(detected);
+            if (debug_mode) std::cout << "detected system layout=" << (detected==Layout::EN?"EN":"RU") << std::endl;
+        } else {
+            std::transform(init_layout_str.begin(), init_layout_str.end(), init_layout_str.begin(), ::tolower);
+            if (init_layout_str == "ru" || init_layout_str == "ru_ru" || init_layout_str == "cyrillic") conv.setCurrentLayout(Layout::RU);
+            else if (init_layout_str == "en" || init_layout_str == "en_us" || init_layout_str == "us" || init_layout_str == "english") conv.setCurrentLayout(Layout::EN);
+            else conv.setCurrentLayout(Layout::EN);
+        }
+        if (debug_mode) {
+            std::cout << "auto-correct=" << (auto_correct?"true":"false") << std::endl;
+            std::cout << "auto-min-length=" << auto_min_len << std::endl;
+            if (!dict_ru.empty()) std::cout << "auto-dict-ru=" << dict_ru << std::endl;
+            if (!dict_en.empty()) std::cout << "auto-dict-en=" << dict_en << std::endl;
+            std::cout << "initial-layout=" << (conv.getCurrentLayout()==Layout::EN?"EN":conv.getCurrentLayout()==Layout::RU?"RU":"UNKNOWN") << std::endl;
         }
     } else {
         std::cerr << conf.err << std::endl;
@@ -382,6 +428,26 @@ bool configure() {
     }
 
 
+    // Auto-correct setup
+    bool auto_correct = false;
+    int auto_min_length = 3;
+    std::cout << "\nEnable automatic correction on the fly (Punto Switcher like)?\n";
+    std::cout << "When enabled, the last typed word will be auto-fixed after you press Space if typed in wrong layout.\n";
+    std::cout << "Enable auto-correct? (y,n) ";
+    std::string auto_choice;
+    while (true) {
+        std::getline(std::cin, auto_choice);
+        if (auto_choice == "y" || auto_choice == "Y") { auto_correct = true; break; }
+        if (auto_choice == "n" || auto_choice == "N") { auto_correct = false; break; }
+        std::cout << "Invalid input. Please enter 'y' or 'n': ";
+    }
+    if (auto_correct) {
+        std::cout << "Auto-correct enabled. Words from 3 letters and longer will be checked.\n";
+        std::cout << "You can adjust 'auto-min-length' in " << CONFIG_FILE << " later.\n\n";
+    } else {
+        std::cout << "Auto-correct disabled. You can enable it later in " << CONFIG_FILE << " (auto-correct=true).\n\n";
+    }
+
     // Save config
     std::cout << "Saving configuration..." << std::endl;
 
@@ -444,6 +510,38 @@ bool configure() {
     cfg_file << "# blacklist=0000:0000:0000:0000:0000000000000000\n";
     cfg_file << "# blacklist=0000:0000:0000:0000:0000000000000000,0000:0000:0000:0000:0000000000000000\n\n";
     cfg_file << "blacklist=" << blacklist << "\n\n\n";
+
+    cfg_file << "# Auto-correct on the fly (Punto Switcher like).\n";
+    cfg_file << "# When true, the daemon will automatically detect a word typed in wrong layout\n";
+    cfg_file << "# and convert it after you press Space/Enter. Requires dictionaries.\n";
+    cfg_file << "# Default: false (manual convert with double Shift only).\n";
+    cfg_file << "# Example:\n";
+    cfg_file << "# auto-correct=true\n\n";
+    cfg_file << "auto-correct=" << (auto_correct ? "true" : "false") << "\n\n\n";
+
+    cfg_file << "# Minimum word length for auto-correction (1..10).\n";
+    cfg_file << "# Short words (1-2 letters) are ignored to avoid false triggers.\n";
+    cfg_file << "# Default: 3\n";
+    cfg_file << "# Example:\n";
+    cfg_file << "# auto-min-length=3\n\n";
+    cfg_file << "auto-min-length=" << auto_min_length << "\n\n\n";
+
+    cfg_file << "# Paths to custom dictionaries for auto-correction (optional).\n";
+    cfg_file << "# If empty, the program tries /usr/share/hunspell/ru_RU.dic and en_US.dic,\n";
+    cfg_file << "# then falls back to built-in word lists.\n";
+    cfg_file << "# Examples:\n";
+    cfg_file << "# auto-dict-ru=/usr/share/hunspell/ru_RU.dic\n";
+    cfg_file << "# auto-dict-en=/usr/share/hunspell/en_US.dic\n\n";
+    cfg_file << "auto-dict-ru=\n";
+    cfg_file << "auto-dict-en=\n\n\n";
+
+    cfg_file << "# Initial keyboard layout assumed at startup.\n";
+    cfg_file << "# Used for auto-correct to know what was displayed vs intended.\n";
+    cfg_file << "# The daemon also tries to auto-detect via xkblayout-state/xkb-switch.\n";
+    cfg_file << "# Values: en, ru\n";
+    cfg_file << "# Example:\n";
+    cfg_file << "# initial-layout=en\n\n";
+    cfg_file << "initial-layout=en\n\n\n";
 
 
     cfg_file.close();
