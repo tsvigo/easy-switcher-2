@@ -58,9 +58,6 @@ Converter::~Converter() {
 // Write key event to internal buffer
 // Returns true only if buffer is changed
 bool Converter::push(int code, int value) {
-    // update pressed keys tracking and layout switch detection
-    updatePressedKeys(code, value);
-
     // clear the buffer if a "killer" key (like Tab, Ctrl, mouse button, etc.) is pressed
     if (is_killer(code) && !is_repeat(value)) {
         clear_buffer();
@@ -653,7 +650,7 @@ bool Converter::getLastWordRange(int& start, int& end) const {
     return true;
 }
 
-bool Converter::shouldAutoCorrect() const {
+bool Converter::shouldAutoCorrect(Layout layout) const {
     if (!auto_enabled) return false;
     if (buffer_.empty()) return false;
     if (dicts_loaded_ && en_dict_.empty() && ru_dict_.empty()) return false;
@@ -678,10 +675,10 @@ bool Converter::shouldAutoCorrect() const {
         return false;
     }
     bool displayedValid, otherValid;
-    if (current_layout == Layout::EN) {
+    if (layout == Layout::EN) {
         displayedValid = enValid;
         otherValid = ruValid;
-    } else if (current_layout == Layout::RU) {
+    } else if (layout == Layout::RU) {
         displayedValid = ruValid;
         otherValid = enValid;
     } else {
@@ -694,7 +691,10 @@ Action Converter::checkAutoTrigger(int code, int value) const {
     if (!auto_enabled) return None;
     if (is_repeat(value) || is_up(value)) return None;
     if (!isDelimiterKey(code)) return None;
-    if (shouldAutoCorrect()) return ConvertWord;
+    // Fresh system layout once per delimiter; tracked layout only as fallback.
+    Layout detected = querySystemLayout();
+    Layout use = (detected == Layout::UNKNOWN) ? current_layout : detected;
+    if (shouldAutoCorrect(use)) return ConvertWord;
     return None;
 }
 
@@ -708,6 +708,27 @@ Layout Converter::querySystemLayout() const {
         std::transform(s.begin(), s.end(), s.begin(), ::tolower);
         return s;
     };
+
+    // 0. KDE Plasma: authoritative session layout via D-Bus (read-only, no side effects).
+    // Runs as the desktop user to reach the session bus. Any error -> fall through.
+    {
+        const char* kdeCmd = "sudo -u v bash -c 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus qdbus org.kde.keyboard /Layouts org.kde.KeyboardLayouts.getLayout 2>/dev/null' 2>/dev/null";
+        fp = popen(kdeCmd, "r");
+        if (fp) {
+            if (fgets(buf, sizeof(buf), fp)) {
+                std::string s = trimLower(buf);
+                pclose(fp);
+                try {
+                    int idx = std::stoi(s);
+                    if (idx == 0) return Layout::EN;
+                    if (idx == 1) return Layout::RU;
+                    // 2+ layouts: cannot map generically, try next backend
+                } catch (...) {
+                    // non-numeric output: try next backend
+                }
+            } else pclose(fp);
+        }
+    }
 
     // 1. Try gsettings as user v (GNOME Wayland/X11) - most reliable for GNOME
     // current holds index, sources holds list
@@ -1003,70 +1024,4 @@ void Converter::loadDictionaries(const std::string& ruPath, const std::string& e
     dicts_loaded_ = true;
     // reserve optimization
     if (ru_dict_.size() < 100) initEmbeddedDictionaries();
-}
-
-void Converter::updatePressedKeys(int code, int value) {
-    if (value == K_DOWN) pressed_keys_.insert(code);
-    else if (value == K_UP) pressed_keys_.erase(code);
-    else if (value == K_REPEAT) return;
-
-    if (ls_keys[0]==0) return;
-
-    // single key layout switch: detect tap (down->up without alpha between)
-    if (ls_keys[1]==0) {
-        int ls = ls_keys[0];
-        if (code == ls && value == K_DOWN) {
-            ls_single_pending_ = true;
-            ls_single_has_alpha_ = false;
-        } else if (isAlphaKey(code) && value == K_DOWN && ls_single_pending_) {
-            ls_single_has_alpha_ = true;
-        } else if (code == ls && value == K_UP) {
-            if (ls_single_pending_ && !ls_single_has_alpha_) {
-                toggleLayout();
-            }
-            ls_single_pending_ = false;
-            ls_single_has_alpha_ = false;
-        }
-        // if killer (not the ls key itself) aborts pending
-        if (is_killer(code) && value == K_DOWN && code != ls) {
-            ls_single_pending_ = false;
-            ls_single_has_alpha_ = false;
-        }
-        return;
-    }
-
-    // combo layout switch (e.g., Alt+Shift)
-    if (ls_keys[1]!=0) {
-        int k1 = ls_keys[0];
-        int k2 = ls_keys[1];
-        if (value == K_DOWN && (code == k1 || code == k2)) {
-            // if one of combo keys goes down and the other is already held, it's a combo press
-            int other = (code == k1) ? k2 : k1;
-            if (pressed_keys_.count(other)) {
-                // second key of combo pressed while first held
-                if (ls_combo_waiting_ && !ls_combo_has_alpha_) {
-                    toggleLayout();
-                }
-                // reset waiting after combo triggered
-                ls_combo_waiting_ = false;
-                ls_combo_has_alpha_ = false;
-                layout_debounce_ = true;
-            } else {
-                // first key of combo down, start waiting
-                ls_combo_waiting_ = true;
-                ls_combo_has_alpha_ = false;
-            }
-        } else if (isAlphaKey(code) && value == K_DOWN && ls_combo_waiting_) {
-            ls_combo_has_alpha_ = true;
-        } else if (value == K_UP && (code == k1 || code == k2)) {
-            // reset on up
-            ls_combo_waiting_ = false;
-            ls_combo_has_alpha_ = false;
-            layout_debounce_ = false;
-        }
-        if (is_killer(code) && value == K_DOWN && code != k1 && code != k2) {
-            ls_combo_waiting_ = false;
-            ls_combo_has_alpha_ = false;
-        }
-    }
 }

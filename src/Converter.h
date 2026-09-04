@@ -94,7 +94,7 @@ public:
     bool isValidRuWord(const std::string& w) const;
 
     bool getLastWordRange(int& start, int& end) const;
-    bool shouldAutoCorrect() const;
+    bool shouldAutoCorrect(Layout layout) const;
     Action checkAutoTrigger(int code, int value) const;
 
     Layout querySystemLayout() const;
@@ -104,17 +104,10 @@ private:
     std::unordered_set<std::string> en_dict_;
     std::unordered_set<std::string> ru_dict_;
     bool dicts_loaded_ = false;
-    std::unordered_set<int> pressed_keys_;
-    mutable bool layout_debounce_ = false;
-    bool ls_single_pending_ = false;
-    bool ls_single_has_alpha_ = false;
-    bool ls_combo_waiting_ = false;
-    bool ls_combo_has_alpha_ = false;
 
     bool buffer_matches_pattern(const std::vector<Pattern> &pattern) const;
     void trim_buffer();
 
     bool loadDictionaryFile(const std::string& path, std::unordered_set<std::string>& dict, bool isRu);
     void initEmbeddedDictionaries();
-    void updatePressedKeys(int code, int value);
 };
