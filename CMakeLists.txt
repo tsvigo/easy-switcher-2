@@ -5,9 +5,15 @@ set(CMAKE_CXX_STANDARD 11)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBEVDEV REQUIRED libevdev)
+pkg_check_modules(HUNSPELL hunspell)
 
 include_directories(${LIBEVDEV_INCLUDE_DIRS})
 link_directories(${LIBEVDEV_LIBRARY_DIRS})
+if(HUNSPELL_FOUND)
+    include_directories(${HUNSPELL_INCLUDE_DIRS})
+    link_directories(${HUNSPELL_LIBRARY_DIRS})
+    add_definitions(-DHAVE_HUNSPELL)
+endif()
 
 add_executable(easy-switcher 
     src/main.cpp
@@ -18,7 +24,7 @@ add_executable(easy-switcher
     src/VirtualKeyboard.cpp
     src/Converter.cpp)
 
-target_link_libraries(${PROJECT_NAME} ${LIBEVDEV_LIBRARIES})
+target_link_libraries(${PROJECT_NAME} ${LIBEVDEV_LIBRARIES} ${HUNSPELL_LIBRARIES})
 
 install(TARGETS easy-switcher RUNTIME DESTINATION /usr/bin)
 install(FILES resources/easy-switcher.service DESTINATION /usr/lib/systemd/system)

@@ -6,6 +6,10 @@
 #include <unordered_map>
 #include <chrono>
 
+#ifdef HAVE_HUNSPELL
+class Hunspell;
+#endif
+
 struct KeyEvent {
     int code;
     int value;
@@ -112,12 +116,18 @@ private:
     std::unordered_set<std::string> en_dict_;
     std::unordered_set<std::string> ru_dict_;
     bool dicts_loaded_ = false;
-
+#ifdef HAVE_HUNSPELL
+    mutable Hunspell* en_hun_ = nullptr;
+    mutable Hunspell* ru_hun_ = nullptr;
+#endif
     bool buffer_matches_pattern(const std::vector<Pattern> &pattern) const;
     void trim_buffer();
 
     bool loadDictionaryFile(const std::string& path, std::unordered_set<std::string>& dict, bool isRu);
     void initEmbeddedDictionaries();
+#ifdef HAVE_HUNSPELL
+    void clearHunspell();
+#endif
     static const int AUTO_DIR_TTL_SEC = 30;
     mutable AutoDir lastAutoDir_ = AutoDir::NONE;
     mutable std::chrono::steady_clock::time_point lastAutoTime_;

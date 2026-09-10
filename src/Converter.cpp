@@ -10,8 +10,13 @@
 #include <cstring>
 #include <cstdint>
 #include <chrono>
+#include <sys/stat.h>
 #include <libevdev/libevdev.h>
 #include <linux/input-event-codes.h>
+
+#ifdef HAVE_HUNSPELL
+#include <hunspell/hunspell.hxx>
+#endif
 
 static const int K_UP = 0;
 static const int K_DOWN = 1;
@@ -54,6 +59,9 @@ Converter::Converter() : conv_key(0), ls_keys{0, 0} {
 
 Converter::~Converter() {
     buffer_.clear();
+#ifdef HAVE_HUNSPELL
+    clearHunspell();
+#endif
 }
 
 // Write key event to internal buffer
@@ -626,11 +634,22 @@ std::string Converter::keysToRuWord(int start, int end) const {
 
 bool Converter::isValidEnWord(const std::string& w) const {
     if (w.empty()) return false;
+#ifdef HAVE_HUNSPELL
+    if (en_hun_) {
+        // Hunspell::spell is non-const but logically const for us
+        return const_cast<Hunspell*>(en_hun_)->spell(w);
+    }
+#endif
     return en_dict_.find(w) != en_dict_.end();
 }
 
 bool Converter::isValidRuWord(const std::string& w) const {
     if (w.empty()) return false;
+#ifdef HAVE_HUNSPELL
+    if (ru_hun_) {
+        return const_cast<Hunspell*>(ru_hun_)->spell(w);
+    }
+#endif
     return ru_dict_.find(w) != ru_dict_.end();
 }
 
@@ -1046,12 +1065,70 @@ void Converter::initEmbeddedDictionaries() {
 }
 
 void Converter::loadDictionaries(const std::string& ruPath, const std::string& enPath) {
+#ifdef HAVE_HUNSPELL
+    clearHunspell();
+    en_dict_.clear();
+    ru_dict_.clear();
+
+    bool ruHun = false, enHun = false;
+    auto tryHunspell = [&](const std::string& dicPath, Hunspell* &hun) -> bool {
+        if (dicPath.empty()) return false;
+        std::string affPath = dicPath;
+        size_t pos = affPath.rfind(".dic");
+        if (pos != std::string::npos) affPath.replace(pos, 4, ".aff");
+        else affPath += ".aff";
+        struct stat st;
+        if (stat(affPath.c_str(), &st) != 0) return false;
+        if (stat(dicPath.c_str(), &st) != 0) return false;
+        try {
+            hun = new Hunspell(affPath.c_str(), dicPath.c_str());
+            return true;
+        } catch (...) {
+            if (hun) { delete hun; hun = nullptr; }
+            return false;
+        }
+    };
+
+    if (!ruPath.empty()) ruHun = tryHunspell(ruPath, ru_hun_);
+    if (!enPath.empty()) enHun = tryHunspell(enPath, en_hun_);
+
+    if (!ruHun) {
+        if (tryHunspell("/usr/share/hunspell/ru_RU.dic", ru_hun_)) ruHun = true;
+        else if (tryHunspell("/usr/share/hunspell/ru.dic", ru_hun_)) ruHun = true;
+    }
+    if (!enHun) {
+        if (tryHunspell("/usr/share/hunspell/en_US.dic", en_hun_)) enHun = true;
+        else if (tryHunspell("/usr/share/hunspell/en_GB.dic", en_hun_)) enHun = true;
+    }
+
+    // flat fallback if hunspell not available for a language
+    bool ruLoaded = ruHun;
+    bool enLoaded = enHun;
+    if (!ruLoaded) {
+        if (!ruPath.empty()) ruLoaded = loadDictionaryFile(ruPath, ru_dict_, true);
+        if (!ruLoaded) {
+            if (loadDictionaryFile("/usr/share/hunspell/ru_RU.dic", ru_dict_, true)) ruLoaded = true;
+            else if (loadDictionaryFile("/usr/share/hunspell/ru.dic", ru_dict_, true)) ruLoaded = true;
+        }
+    }
+    if (!enLoaded) {
+        if (!enPath.empty()) enLoaded = loadDictionaryFile(enPath, en_dict_, false);
+        if (!enLoaded) {
+            if (loadDictionaryFile("/usr/share/hunspell/en_US.dic", en_dict_, false)) enLoaded = true;
+            else if (loadDictionaryFile("/usr/share/hunspell/en_GB.dic", en_dict_, false)) enLoaded = true;
+            else if (loadDictionaryFile("/usr/share/dict/words", en_dict_, false)) enLoaded = true;
+            else if (loadDictionaryFile("/usr/share/dict/american-english", en_dict_, false)) enLoaded = true;
+        }
+    }
+    // always ensure embedded fallback for common words (checked second after hunspell)
+    initEmbeddedDictionaries();
+    dicts_loaded_ = true;
+#else
     bool ruLoaded = false, enLoaded = false;
     if (!ruPath.empty()) ruLoaded = loadDictionaryFile(ruPath, ru_dict_, true);
     if (!enPath.empty()) enLoaded = loadDictionaryFile(enPath, en_dict_, false);
 
     if (!ruLoaded) {
-        // try default hunspell paths
         if (loadDictionaryFile("/usr/share/hunspell/ru_RU.dic", ru_dict_, true)) ruLoaded = true;
         else if (loadDictionaryFile("/usr/share/hunspell/ru.dic", ru_dict_, true)) ruLoaded = true;
     }
@@ -1061,15 +1138,19 @@ void Converter::loadDictionaries(const std::string& ruPath, const std::string& e
         else if (loadDictionaryFile("/usr/share/dict/words", en_dict_, false)) enLoaded = true;
         else if (loadDictionaryFile("/usr/share/dict/american-english", en_dict_, false)) enLoaded = true;
     }
-    // fallback to embedded if still empty
     if (ru_dict_.empty() || en_dict_.empty()) {
         initEmbeddedDictionaries();
     } else {
-        // still add embedded to ensure common words present even if large dict loaded
-        // but avoid duplicate large insertion? init will add few hundred, okay
         initEmbeddedDictionaries();
     }
     dicts_loaded_ = true;
-    // reserve optimization
     if (ru_dict_.size() < 100) initEmbeddedDictionaries();
+#endif
 }
+
+#ifdef HAVE_HUNSPELL
+void Converter::clearHunspell() {
+    if (en_hun_) { delete en_hun_; en_hun_ = nullptr; }
+    if (ru_hun_) { delete ru_hun_; ru_hun_ = nullptr; }
+}
+#endif
