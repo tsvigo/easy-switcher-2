@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <chrono>
 #include <libevdev/libevdev.h>
 #include <linux/input-event-codes.h>
 
@@ -671,7 +672,15 @@ bool Converter::shouldAutoCorrect(Layout layout) const {
     bool ruValid = isValidRuWord(ruLower);
 
     if (enValid == ruValid) {
-        // both valid or both invalid -> don't auto-correct to avoid false positives
+        // both valid or both invalid -> don't auto-correct to avoid false positives.
+        // Narrow exception (Algorithm A): ambiguous singles z/b only with
+        // fresh EN->RU memory AND >=2 RU-only words among previous <=3 words.
+        if (enValid && layout == Layout::EN && letterCount == 1 &&
+            (enLower == "z" || enLower == "b") &&
+            lastAutoDir_ == AutoDir::EN_TO_RU && !autoDirExpired() &&
+            precedingRuCount(start) >= 2) {
+            return true;
+        }
         return false;
     }
     bool displayedValid, otherValid;
@@ -694,8 +703,47 @@ Action Converter::checkAutoTrigger(int code, int value) const {
     // Fresh system layout once per delimiter; tracked layout only as fallback.
     Layout detected = querySystemLayout();
     Layout use = (detected == Layout::UNKNOWN) ? current_layout : detected;
-    if (shouldAutoCorrect(use)) return ConvertWord;
+    if (shouldAutoCorrect(use)) {
+        lastAutoDir_ = (use == Layout::EN) ? AutoDir::EN_TO_RU : AutoDir::RU_TO_EN;
+        lastAutoTime_ = std::chrono::steady_clock::now();
+        return ConvertWord;
+    }
     return None;
+}
+
+bool Converter::autoDirExpired() const {
+    auto age = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - lastAutoTime_).count();
+    return age > AUTO_DIR_TTL_SEC;
+}
+
+// Count RU-only words (valid RU, invalid EN) among up to 3 complete words
+// located strictly before buffer position wordStart. UNKNOWN words are
+// skipped: they neither count nor stop the backward scan. BufKiller/mouse
+// naturally bound the history (they clear the buffer).
+int Converter::precedingRuCount(int wordStart) const {
+    int count = 0;
+    int examined = 0;
+    int e = wordStart - 1;
+    while (examined < 3 && e >= 0) {
+        while (e >= 0 && isDelimiterKey(buffer_[e].code)) e--;
+        if (e < 0) break;
+        int we = e;
+        while (e >= 0 && !isDelimiterKey(buffer_[e].code)) e--;
+        int ws = e + 1;
+        bool hasAlpha = false;
+        for (int i = ws; i <= we; ++i) {
+            if (isAlphaKey(buffer_[i].code)) { hasAlpha = true; break; }
+        }
+        if (!hasAlpha) continue;
+        examined++;
+        std::string enW = toLowerEn(keysToEnWord(ws, we));
+        std::string ruW = toLowerRu(keysToRuWord(ws, we));
+        if (!enW.empty() && !ruW.empty() && isValidRuWord(ruW) && !isValidEnWord(enW)) {
+            count++;
+        }
+    }
+    return count;
 }
 
 Layout Converter::querySystemLayout() const {

@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_set>
 #include <unordered_map>
+#include <chrono>
 
 struct KeyEvent {
     int code;
@@ -28,6 +29,13 @@ enum class Layout {
     EN,
     RU,
     UNKNOWN
+};
+
+// Last successful AUTO-correct direction (for ambiguous singles only).
+enum class AutoDir {
+    NONE,
+    EN_TO_RU,
+    RU_TO_EN
 };
 
 
@@ -110,4 +118,9 @@ private:
 
     bool loadDictionaryFile(const std::string& path, std::unordered_set<std::string>& dict, bool isRu);
     void initEmbeddedDictionaries();
+    static const int AUTO_DIR_TTL_SEC = 30;
+    mutable AutoDir lastAutoDir_ = AutoDir::NONE;
+    mutable std::chrono::steady_clock::time_point lastAutoTime_;
+    bool autoDirExpired() const;
+    int precedingRuCount(int wordStart) const;
 };
