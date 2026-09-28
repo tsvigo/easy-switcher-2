@@ -3,6 +3,8 @@ project(easy-switcher)
 
 set(CMAKE_CXX_STANDARD 11)
 
+option(DEBUG_BUILD "Enable debug logging" OFF)
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBEVDEV REQUIRED libevdev)
 pkg_check_modules(HUNSPELL hunspell)
@@ -13,6 +15,10 @@ if(HUNSPELL_FOUND)
     include_directories(${HUNSPELL_INCLUDE_DIRS})
     link_directories(${HUNSPELL_LIBRARY_DIRS})
     add_definitions(-DHAVE_HUNSPELL)
+endif()
+
+if(DEBUG_BUILD)
+    add_definitions(-DDEBUG_BUILD)
 endif()
 
 add_executable(easy-switcher 

@@ -692,12 +692,12 @@ bool Converter::shouldAutoCorrect(Layout layout) const {
 
     if (enValid == ruValid) {
         // both valid or both invalid -> don't auto-correct to avoid false positives.
-        // Narrow exception (Algorithm A): ambiguous singles z/b only with
-        // fresh EN->RU memory AND >=2 RU-only words among previous <=3 words.
+        // Mandatory singles policy: the 8 ambiguous EN/RU single pairs always
+        // convert when typed in EN (no memory/TTL/context required).
         if (enValid && layout == Layout::EN && letterCount == 1 &&
-            (enLower == "z" || enLower == "b") &&
-            lastAutoDir_ == AutoDir::EN_TO_RU && !autoDirExpired() &&
-            precedingRuCount(start) >= 2) {
+            (enLower == "e" || enLower == "r" || enLower == "d" ||
+             enLower == "f" || enLower == "j" || enLower == "z" ||
+             enLower == "c" || enLower == "b")) {
             return true;
         }
         return false;
