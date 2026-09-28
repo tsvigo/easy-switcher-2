@@ -296,8 +296,16 @@ std::vector<KeyEvent> Converter::convert(Action action) const {
     }
 
 
+    // Never touch a trailing ENTER/KPENTER: it already reached the app
+    // (replaying it would submit twice, backspacing it eats the fresh prompt).
+    int emit_end = (int) buffer_.size() - 1;
+    while (emit_end >= start_index &&
+           (buffer_[emit_end].code == KEY_ENTER || buffer_[emit_end].code == KEY_KPENTER)) {
+        --emit_end;
+    }
+
     // send a backspace for each key
-    for (int i = start_index; i < (int) buffer_.size(); ++i) {
+    for (int i = start_index; i <= emit_end; ++i) {
         if (!is_shift(buffer_[i].code)) {
             result.push_back({KEY_BACKSPACE, K_DOWN});
             result.push_back({KEY_BACKSPACE, K_UP});
@@ -305,14 +313,41 @@ std::vector<KeyEvent> Converter::convert(Action action) const {
     }
 
     // replay the buffer
-    for (int i = start_index; i < (int) buffer_.size(); ++i) {
+    for (int i = start_index; i <= emit_end; ++i) {
         result.push_back(buffer_[i]);
         if (!is_shift(buffer_[i].code)) {
             result.push_back({buffer_[i].code, K_UP});
         }
     }
 
+    last_converted_ = buffer_;
     return result;
+}
+
+// True when current buffer holds nothing new since the last convert()
+// ( trailing delimiters ignored ): already-converted content must not
+// be evaluated again on the next delimiter.
+bool Converter::isSameAsConverted() const {
+    size_t a = buffer_.size();
+    while (a > 0) {
+        int c = buffer_[a - 1].code;
+        if (c != KEY_SPACE && c != KEY_ENTER && c != KEY_KPENTER) break;
+        --a;
+    }
+    size_t b = last_converted_.size();
+    while (b > 0) {
+        int c = last_converted_[b - 1].code;
+        if (c != KEY_SPACE && c != KEY_ENTER && c != KEY_KPENTER) break;
+        --b;
+    }
+    if (a != b) return false;
+    for (size_t i = 0; i < a; ++i) {
+        if (buffer_[i].code != last_converted_[i].code ||
+            buffer_[i].value != last_converted_[i].value) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // Returns readable buffer.
@@ -719,6 +754,8 @@ Action Converter::checkAutoTrigger(int code, int value) const {
     if (!auto_enabled) return None;
     if (is_repeat(value) || is_up(value)) return None;
     if (!isDelimiterKey(code)) return None;
+    // Already converted on a previous delimiter: do not evaluate again.
+    if (isSameAsConverted()) return None;
     // Fresh system layout once per delimiter; tracked layout only as fallback.
     Layout detected = querySystemLayout();
     Layout use = (detected == Layout::UNKNOWN) ? current_layout : detected;

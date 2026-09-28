@@ -133,4 +133,8 @@ private:
     mutable std::chrono::steady_clock::time_point lastAutoTime_;
     bool autoDirExpired() const;
     int precedingRuCount(int wordStart) const;
+    // Buffer snapshot at the last convert(): guards against re-evaluating
+    // already-converted content on the next delimiter (phantom resubmits).
+    mutable std::vector<KeyEvent> last_converted_;
+    bool isSameAsConverted() const;
 };
